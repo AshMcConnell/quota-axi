@@ -29,18 +29,19 @@ credential is present and resolving. All endpoints stay on the fixed
 
 ## Install
 
-```sh
-npm install -g github:AshMcConnell/quota-axi
-```
-
-The `prepare` script builds `dist/` during a git install. To work on the fork
-itself:
+Clone and link the checkout so `quota-axi` on `PATH` runs this fork:
 
 ```sh
+git clone https://github.com/AshMcConnell/quota-axi
+cd quota-axi
 pnpm install
-pnpm test
 pnpm build
+npm link
 ```
+
+`npm link` points the global `quota-axi` command at the checkout; rebuilding
+after a source change is enough. A tarball install also works because
+`prepublishOnly` builds `dist/`.
 
 ## Upstream
 
