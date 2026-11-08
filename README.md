@@ -10,6 +10,10 @@
   <a href="https://discord.gg/Wsy2NpnZDu"><img alt="Discord" src="https://img.shields.io/discord/1439901831038763092?style=flat-square&label=discord" /></a>
 </p>
 
+<p align="center"><strong>Fork:</strong> adds Command Code's monthly plan window for
+<a href="https://github.com/AshMcConnell/herdr-quota-status">herdr-quota-status</a>.
+See <a href="FORK.md">FORK.md</a>.</p>
+
 Quota CLI for agents - designed with [AXI](https://axi.md) (Agent eXperience Interface).
 
 Agents need quota state before they choose where work can safely run.

@@ -51,6 +51,7 @@
     "lint": "eslint bin src test scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "license": "MIT",

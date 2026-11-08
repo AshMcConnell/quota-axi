@@ -46,6 +46,23 @@ import {
 export const COMMANDCODE_API_ORIGIN = "https://api.commandcode.ai";
 export const COMMANDCODE_WHOAMI_PATH = "/alpha/whoami";
 export const COMMANDCODE_CREDITS_PATH = "/alpha/billing/credits";
+export const COMMANDCODE_SUBSCRIPTION_PATH = "/alpha/billing/subscriptions";
+export const COMMANDCODE_USAGE_SUMMARY_PATH = "/alpha/usage/summary";
+
+// Fallbacks for the plan's included monthly credit pool, in quota-axi's
+// normalized credits. The usage summary normally supplies the denominator;
+// these cover a summary read that fails.
+const COMMANDCODE_PLAN_MONTHLY_CREDITS: Record<string, number> = {
+  "individual-go": 10,
+  "individual-go-v1": 10,
+  "individual-goat": 70,
+  "individual-pro": 30,
+  "individual-pro-v1": 80,
+  "individual-provider": 15,
+  "individual-max": 150,
+  "individual-ultra": 300,
+  "teams-pro": 40,
+};
 
 export const COMMANDCODE_SOURCE_ORDER = [
   PI_COMMANDCODE_CREDENTIAL_SOURCE,
@@ -410,14 +427,24 @@ async function readCommandCodeQuota(
   if (cacheContextId) publishCommandCodeReadingContextId(cacheContextId);
 
   let creditsPayload: unknown;
+  let subscriptionPayload: unknown;
   try {
-    creditsPayload = await requestJson(
-      creditsUrl(identity.orgId),
-      credential,
-      signal,
-      dependencies,
-      "credits",
-    );
+    [creditsPayload, subscriptionPayload] = await Promise.all([
+      requestJson(
+        creditsUrl(identity.orgId),
+        credential,
+        signal,
+        dependencies,
+        "credits",
+      ),
+      requestJson(
+        subscriptionUrl(identity.orgId),
+        credential,
+        signal,
+        dependencies,
+        "credits",
+      ).catch(() => undefined),
+    ]);
   } catch (error) {
     const failure = asCommandCodeFailure(error);
     failure.authUsable = true;
@@ -426,7 +453,26 @@ async function readCommandCodeQuota(
     throw failure;
   }
 
+  const periodStart = objectValue(
+    objectValue(subscriptionPayload)?.data,
+  )?.currentPeriodStart;
+  const summaryPayload = periodStart
+    ? await requestJson(
+        usageSummaryUrl(identity.orgId, periodStart),
+        credential,
+        signal,
+        dependencies,
+        "credits",
+      ).catch(() => undefined)
+    : undefined;
+
   const normalized = normalizeCommandCodePayload(creditsPayload, identity);
+  const monthlyWindow = commandCodeMonthlyWindow(
+    creditsPayload,
+    subscriptionPayload,
+    summaryPayload,
+  );
+  if (monthlyWindow) normalized.windows.push(monthlyWindow);
   const refreshedAt = new Date(dependencies.now()).toISOString();
   attempts[attempts.length - 1] = { source, status: "success" };
   return {
@@ -462,6 +508,21 @@ function whoamiUrl(): string {
 function creditsUrl(orgId: string | undefined): string {
   const url = new URL(COMMANDCODE_CREDITS_PATH, COMMANDCODE_API_ORIGIN);
   if (orgId) url.searchParams.set("orgId", orgId);
+  return url.href;
+}
+
+function subscriptionUrl(orgId: string | undefined): string {
+  const url = new URL(COMMANDCODE_SUBSCRIPTION_PATH, COMMANDCODE_API_ORIGIN);
+  if (orgId) url.searchParams.set("orgId", orgId);
+  return url.href;
+}
+
+function usageSummaryUrl(orgId: string | undefined, since: unknown): string {
+  const url = new URL(COMMANDCODE_USAGE_SUMMARY_PATH, COMMANDCODE_API_ORIGIN);
+  if (orgId) url.searchParams.set("orgId", orgId);
+  if (typeof since === "string" && since !== "") {
+    url.searchParams.set("since", since);
+  }
   return url.href;
 }
 
@@ -626,7 +687,11 @@ export function normalizeCommandCodePayload(
   },
 ): NormalizedCommandCodePayload {
   const root = objectValue(payload);
-  const data = objectValue(root?.data) ?? root;
+  // Command Code nests the credit balance under `credits` while keeping
+  // windowLimits at the root; merge both so monthlyCredits is seen.
+  const base = objectValue(root?.data) ?? root;
+  const nested = objectValue(root?.credits);
+  const data = nested ? { ...(base ?? {}), ...nested } : base;
   if (!data) {
     throw new CommandCodeFailure("schema_invalid", {
       staleEligible: true,
@@ -723,6 +788,66 @@ function exactCredits(
     return undefined;
   }
   return { remaining: monthly + purchased + free, unit: "credits" };
+}
+
+/**
+ * The monthly credit pool: `monthlyCredits` is what is left of the plan's
+ * included allowance, and the subscription names the plan and billing
+ * period. Purchased and free credits are excluded because they roll over and
+ * are not paced by the monthly limit. The usage summary reports what monthly
+ * credits were spent this period, so spent plus remaining is the plan's pool
+ * without trusting a plan-name table; the table covers a failed summary read.
+ */
+function commandCodeMonthlyWindow(
+  creditsPayload: unknown,
+  subscriptionPayload: unknown,
+  summaryPayload: unknown,
+): QuotaWindow | undefined {
+  const root = objectValue(creditsPayload);
+  const base = objectValue(root?.data) ?? root;
+  const nested = objectValue(root?.credits);
+  const data = nested ? { ...(base ?? {}), ...nested } : base;
+  const remaining = nonnegativeFinite(data?.monthlyCredits);
+  const subscription = objectValue(objectValue(subscriptionPayload)?.data);
+  if (
+    remaining === undefined ||
+    !subscription ||
+    subscription.status !== "active" ||
+    objectValue(data?.windowLimits)?.limited === false
+  ) {
+    return undefined;
+  }
+  const resetsAt = parseResetAt(subscription.currentPeriodEnd);
+  if (!resetsAt) return undefined;
+
+  const spent = nonnegativeFinite(
+    objectValue(summaryPayload)?.totalMonthlyCredits,
+  );
+  const summaryTotal = spent === undefined ? undefined : spent + remaining;
+  const total =
+    summaryTotal !== undefined && summaryTotal > 0
+      ? summaryTotal
+      : nonnegativeFinite(
+          COMMANDCODE_PLAN_MONTHLY_CREDITS[String(subscription.planId ?? "")],
+        );
+  if (total === undefined || total <= 0) return undefined;
+
+  const periodStart = Date.parse(String(subscription.currentPeriodStart ?? ""));
+  const periodEnd = Date.parse(resetsAt);
+  const windowSeconds =
+    Number.isFinite(periodStart) && periodEnd > periodStart
+      ? Math.round((periodEnd - periodStart) / 1000)
+      : 30 * 24 * 60 * 60;
+  const percentRemaining = clampPercent((remaining / total) * 100);
+  return {
+    id: "monthly",
+    label: "Monthly",
+    kind: "monthly",
+    percentUsed: clampPercent(100 - percentRemaining),
+    percentRemaining,
+    resetsAt,
+    windowSeconds,
+  };
 }
 
 function hasCreditFields(data: Record<string, unknown>): boolean {

@@ -7,6 +7,8 @@ import {
   COMMANDCODE_API_ORIGIN,
   COMMANDCODE_CREDITS_PATH,
   COMMANDCODE_SOURCE_ORDER,
+  COMMANDCODE_SUBSCRIPTION_PATH,
+  COMMANDCODE_USAGE_SUMMARY_PATH,
   COMMANDCODE_WHOAMI_PATH,
   normalizeCommandCodePayload,
 } from "../../src/providers/commandcode.js";
@@ -36,6 +38,24 @@ const WHOAMI = JSON.parse(
 const CREDITS = JSON.parse(
   readFileSync(
     join(process.cwd(), "test/fixtures/commandcode/credits.json"),
+    "utf8",
+  ),
+) as unknown;
+const NESTED_CREDITS = JSON.parse(
+  readFileSync(
+    join(process.cwd(), "test/fixtures/commandcode/nested-credits.json"),
+    "utf8",
+  ),
+) as unknown;
+const SUBSCRIPTION = JSON.parse(
+  readFileSync(
+    join(process.cwd(), "test/fixtures/commandcode/subscription.json"),
+    "utf8",
+  ),
+) as unknown;
+const SUMMARY = JSON.parse(
+  readFileSync(
+    join(process.cwd(), "test/fixtures/commandcode/summary.json"),
     "utf8",
   ),
 ) as unknown;
@@ -78,7 +98,7 @@ describe("Command Code request transport", () => {
     ]);
     const report = await testAdapter({ fetch: request }).fetchQuota(OPTIONS);
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(4);
     const urls = request.mock.calls.map(([input, init]) => {
       const url = new URL(String(input));
       return {
@@ -113,6 +133,20 @@ describe("Command Code request transport", () => {
       search: "?orgId=org_fixture",
       method: "GET",
     });
+    expect(urls[2]).toMatchObject({
+      protocol: "https:",
+      hostname: "api.commandcode.ai",
+      pathname: COMMANDCODE_SUBSCRIPTION_PATH,
+      search: "?orgId=org_fixture",
+      method: "GET",
+    });
+    expect(urls[3]).toMatchObject({
+      protocol: "https:",
+      hostname: "api.commandcode.ai",
+      pathname: COMMANDCODE_USAGE_SUMMARY_PATH,
+      search: "?orgId=org_fixture&since=2026-09-01T00%3A00%3A00.000Z",
+      method: "GET",
+    });
     expect(COMMANDCODE_API_ORIGIN).toBe("https://api.commandcode.ai");
     expect(JSON.stringify(report)).not.toContain(SYNTHETIC_KEY);
     expect(report).toMatchObject({
@@ -122,7 +156,11 @@ describe("Command Code request transport", () => {
       credits: { remaining: 55, unit: "credits" },
       state: { status: "fresh", stale: false, authStatus: "usable" },
     });
-    expect(report.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
+    expect(report.windows.map(({ id }) => id)).toEqual([
+      "five_hour",
+      "weekly",
+      "monthly",
+    ]);
     expect(report.windows[0]).toMatchObject({
       kind: "session",
       windowSeconds: 18_000,
@@ -136,9 +174,17 @@ describe("Command Code request transport", () => {
       percentRemaining: 85,
       resetsAt: new Date(1_789_400_000 * 1000).toISOString(),
     });
+    expect(report.windows[2]).toMatchObject({
+      id: "monthly",
+      label: "Monthly",
+      kind: "monthly",
+      percentUsed: 34,
+      percentRemaining: 66,
+      resetsAt: "2026-10-01T00:00:00.000Z",
+    });
   });
 
-  it("never calls model, chat, subscription, or summary endpoints", async () => {
+  it("calls only the fixed-origin quota endpoints", async () => {
     const request = sequentialFetch([
       jsonResponse(WHOAMI),
       jsonResponse(CREDITS),
@@ -147,10 +193,52 @@ describe("Command Code request transport", () => {
     const paths = request.mock.calls.map(
       ([input]) => new URL(String(input)).pathname,
     );
-    expect(paths.every((path) => path.startsWith("/alpha/"))).toBe(true);
+    expect(paths).toEqual([
+      COMMANDCODE_WHOAMI_PATH,
+      COMMANDCODE_CREDITS_PATH,
+      COMMANDCODE_SUBSCRIPTION_PATH,
+      COMMANDCODE_USAGE_SUMMARY_PATH,
+    ]);
     expect(paths.join(" ")).not.toMatch(
-      /provider|models|chat|messages|subscriptions|summary/,
+      /provider|models|chat|messages|completions|responses/,
     );
+  });
+
+  it("reads nested credits and reports the monthly plan window", async () => {
+    const request = sequentialFetch([
+      jsonResponse(WHOAMI),
+      jsonResponse(NESTED_CREDITS),
+    ]);
+    const report = await testAdapter({ fetch: request }).fetchQuota(OPTIONS);
+    expect(report.credits).toEqual({ remaining: 49, unit: "credits" });
+    const monthly = report.windows.find(({ id }) => id === "monthly");
+    expect(monthly).toMatchObject({
+      label: "Monthly",
+      kind: "monthly",
+      percentUsed: 30,
+      percentRemaining: 70,
+      resetsAt: "2026-10-01T00:00:00.000Z",
+      windowSeconds: 30 * 24 * 60 * 60,
+    });
+  });
+
+  it("falls back to the plan table when the usage summary fails", async () => {
+    const request = sequentialFetch(
+      [jsonResponse(WHOAMI), jsonResponse(NESTED_CREDITS)],
+      { summary: new Response("nope", { status: 500 }) },
+    );
+    const report = await testAdapter({ fetch: request }).fetchQuota(OPTIONS);
+    const monthly = report.windows.find(({ id }) => id === "monthly");
+    expect(monthly).toMatchObject({ percentRemaining: 70 });
+  });
+
+  it("omits the monthly window when the subscription read fails", async () => {
+    const request = sequentialFetch(
+      [jsonResponse(WHOAMI), jsonResponse(NESTED_CREDITS)],
+      { subscription: new Response("nope", { status: 500 }) },
+    );
+    const report = await testAdapter({ fetch: request }).fetchQuota(OPTIONS);
+    expect(report.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
   });
 
   it("rejects every redirect without a follow-up request", async () => {
@@ -213,11 +301,16 @@ describe("Command Code request transport", () => {
       allowKeychainPrompt: false,
       refreshCredentials: true,
     });
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(4);
     const paths = request.mock.calls.map(
       ([input]) => new URL(String(input)).pathname,
     );
-    expect(paths).toEqual([COMMANDCODE_WHOAMI_PATH, COMMANDCODE_CREDITS_PATH]);
+    expect(paths).toEqual([
+      COMMANDCODE_WHOAMI_PATH,
+      COMMANDCODE_CREDITS_PATH,
+      COMMANDCODE_SUBSCRIPTION_PATH,
+      COMMANDCODE_USAGE_SUMMARY_PATH,
+    ]);
   });
 });
 
@@ -787,9 +880,19 @@ function fileSource(
   };
 }
 
-function sequentialFetch(responses: Response[]) {
+function sequentialFetch(
+  responses: Response[],
+  extras: { subscription?: Response; summary?: Response } = {},
+) {
   const queue = [...responses];
-  return vi.fn(async () => {
+  return vi.fn(async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === COMMANDCODE_SUBSCRIPTION_PATH) {
+      return extras.subscription ?? jsonResponse(SUBSCRIPTION);
+    }
+    if (path === COMMANDCODE_USAGE_SUMMARY_PATH) {
+      return extras.summary ?? jsonResponse(SUMMARY);
+    }
     const next = queue.shift();
     if (!next) throw new Error("unexpected extra request");
     return next;
