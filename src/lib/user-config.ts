@@ -2,13 +2,16 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { TuiShow } from "../tui.js";
+import { PROVIDER_IDS, type ProviderId } from "../types.js";
 import { readJsonFile } from "./fs.js";
 
 /**
  * The user-level quota-axi configuration file:
  * `$XDG_CONFIG_HOME/quota-axi/config.json`, or `~/.config/quota-axi/config.json`
- * when `XDG_CONFIG_HOME` is unset. It holds human preferences only, so nothing
- * an agent reads from quota-axi ever depends on it.
+ * when `XDG_CONFIG_HOME` is unset. The `tui.*` entries are human display
+ * preferences, so nothing an agent reads from quota-axi depends on them; the
+ * `pace.*` entries describe how the account is really used and do reach the
+ * derived pace and runway.
  */
 export function userConfigFilePath(
   environment: Record<string, string | undefined> = process.env,
@@ -30,6 +33,30 @@ export function readTuiShowPreference(
   const tui = isRecord(config) ? config.tui : undefined;
   const show = isRecord(tui) ? tui.show : undefined;
   return show === "used" ? "used" : "remaining";
+}
+
+/**
+ * The providers whose pace is measured on a weekday clock, `pace.weekdaysOnly`
+ * in the user config file: an array of provider IDs such as `["claude"]`.
+ * Saturday and Sunday then contribute neither elapsed nor remaining time to
+ * that provider's pace and run-out projection. Unknown or non-string entries
+ * are ignored; an absent, unreadable, or malformed file selects no provider.
+ */
+export function readWeekdaysOnlyProviders(
+  file: string = userConfigFilePath(),
+): Set<ProviderId> {
+  const config = readJsonFile(file);
+  const pace = isRecord(config) ? config.pace : undefined;
+  const entries = isRecord(pace) ? pace.weekdaysOnly : undefined;
+  const selected = new Set<ProviderId>();
+  if (!Array.isArray(entries)) return selected;
+  for (const entry of entries) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if ((PROVIDER_IDS as readonly string[]).includes(id))
+      selected.add(id as ProviderId);
+  }
+  return selected;
 }
 
 /** Resolves a lane to the label its card shows. */

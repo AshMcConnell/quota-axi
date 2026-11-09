@@ -41,6 +41,7 @@ export function markAgyStaleIfExpiredReset(
 export function withQuotaSemantics(
   provider: ProviderQuota,
   generatedAt: string,
+  options: { clock?: "calendar" | "weekdays" } = {},
 ): ProviderQuota {
   if (provider.provider === "agy") {
     provider = markAgyStaleIfExpiredReset(provider, Date.parse(generatedAt));
@@ -49,6 +50,7 @@ export function withQuotaSemantics(
     ...window,
     pace: computeWindowPace(window, generatedAt, {
       stale: provider.state.stale,
+      ...(options.clock ? { clock: options.clock } : {}),
     }),
   }));
   const withWindows = { ...provider, windows };

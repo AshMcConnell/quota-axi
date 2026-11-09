@@ -1,3 +1,4 @@
+import { addWeekdayMs, weekdayMsBetween } from "./lib/work-calendar.js";
 import { SELECTION_SCALAR_KEY } from "./types.js";
 import type {
   EffectivePaceSummary,
@@ -36,6 +37,12 @@ export const SELECTION_MIN_TIME_REMAINING_PERCENT = 0.01;
 
 type PaceOptions = {
   stale?: boolean;
+  /**
+   * The clock the cycle is measured against. The default is calendar time;
+   * `weekdays` counts only Monday through Friday in the host's local time, so
+   * an idle weekend cannot look like surplus headroom.
+   */
+  clock?: "calendar" | "weekdays";
 };
 
 type ResolvedCycle = {
@@ -65,10 +72,23 @@ export function computeWindowPace(
   if (!cycle.ok) return unknownPace(cycle.reason);
 
   const { cycleSeconds, startsAtMs, resetsAtMs, cycleBasis } = cycle.value;
-  const remainingMs = resetsAtMs - generatedAtMs;
-  const elapsedMs = generatedAtMs - startsAtMs;
-  const timeRemainingPercent = (100 * remainingMs) / (cycleSeconds * 1000);
-  const elapsedPercent = (100 * elapsedMs) / (cycleSeconds * 1000);
+  let clockMs = cycleSeconds * 1000;
+  let elapsedMs = generatedAtMs - startsAtMs;
+  // A weekday cycle with no weekday time at all - a session that opens and
+  // resets over a weekend - has no working-time clock to measure, so it keeps
+  // the calendar one rather than dividing by zero.
+  let weekdayClock = false;
+  if (options.clock === "weekdays") {
+    const activeMs = weekdayMsBetween(startsAtMs, resetsAtMs);
+    if (activeMs > 0) {
+      weekdayClock = true;
+      clockMs = activeMs;
+      elapsedMs = weekdayMsBetween(startsAtMs, generatedAtMs);
+    }
+  }
+  const remainingMs = clockMs - elapsedMs;
+  const timeRemainingPercent = (100 * remainingMs) / clockMs;
+  const elapsedPercent = (100 * elapsedMs) / clockMs;
   const reservePercentPoints = percentRemaining - timeRemainingPercent;
   const status = classifyPace(reservePercentPoints);
 
@@ -79,6 +99,7 @@ export function computeWindowPace(
     reservePercentPoints: roundPace(reservePercentPoints),
     cycleBasis,
     cycleSeconds,
+    ...(weekdayClock ? { clock: "weekdays" as const } : {}),
   };
 
   if (elapsedPercent > 0) {
@@ -90,8 +111,13 @@ export function computeWindowPace(
     const burnPerMs = percentUsed / elapsedMs;
     if (burnPerMs > 0 && remainingBudget >= 0) {
       const msToExhaust = remainingBudget / burnPerMs;
-      const projectedExhaustedAtMs = generatedAtMs + msToExhaust;
-      if (isRepresentableDateMs(projectedExhaustedAtMs)) {
+      const projectedExhaustedAtMs = weekdayClock
+        ? addWeekdayMs(generatedAtMs, msToExhaust)
+        : generatedAtMs + msToExhaust;
+      if (
+        projectedExhaustedAtMs !== undefined &&
+        isRepresentableDateMs(projectedExhaustedAtMs)
+      ) {
         pace.projectedExhaustedAt = new Date(
           projectedExhaustedAtMs,
         ).toISOString();

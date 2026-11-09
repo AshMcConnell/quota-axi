@@ -704,9 +704,11 @@ function demotedWindow(window: QuotaWindow): QuotaWindow {
       ? {
           pace: {
             // Kept: `reason` is uncertainty, reserve and burn are tie-break
-            // evidence. Dropped: the inputs those two are derived from.
+            // evidence, and `clock` says whether the cycle was measured on
+            // weekdays. Dropped: the inputs those two are derived from.
             status: window.pace.status,
             ...(window.pace.reason ? { reason: window.pace.reason } : {}),
+            ...(window.pace.clock ? { clock: window.pace.clock } : {}),
             reservePercentPoints: window.pace.reservePercentPoints,
             burnMultiple: window.pace.burnMultiple,
           },

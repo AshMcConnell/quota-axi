@@ -27,6 +27,27 @@ The extra reads happen only for Command Code, and only while a Command Code
 credential is present and resolving. All endpoints stay on the fixed
 `https://api.commandcode.ai` origin and remain read-only GETs.
 
+## Weekday pace
+
+Upstream measures pace against the calendar. This fork can measure a
+provider's elapsed and remaining cycle time on a weekday clock instead, so an
+account that is used only Monday through Friday is not read as having surplus
+headroom after an idle weekend:
+
+```json
+{ "pace": { "weekdaysOnly": ["claude"] } }
+```
+
+in `~/.config/quota-axi/config.json` (`$XDG_CONFIG_HOME/quota-axi/config.json`
+when `XDG_CONFIG_HOME` is set). Saturday and Sunday then contribute neither
+elapsed nor remaining time for the named providers, and a run-out projection
+is mapped back onto wall-clock time. The affected windows carry
+`pace.clock: "weekdays"`; everything else about the report is unchanged, and
+providers not in the list keep the calendar clock. This one setting
+deliberately reaches TOON and JSON, unlike the `tui.*` display preferences:
+it describes how the account is really used, so the derived pace and runway
+are more accurate.
+
 ## Install
 
 Clone and link the checkout so `quota-axi` on `PATH` runs this fork:

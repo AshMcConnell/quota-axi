@@ -28,6 +28,7 @@ import { providerPresence } from "./lib/source-attempts.js";
 import {
   readTuiAccountLabels,
   readTuiShowPreference,
+  readWeekdaysOnlyProviders,
 } from "./lib/user-config.js";
 import { resolveSystemTuiTheme } from "./lib/system-theme.js";
 import { nowIso } from "./lib/time.js";
@@ -469,8 +470,16 @@ export async function fetchQuota(
   // stamp taken before the request would read an unopened window as
   // `future_cycle_start` by the request latency.
   const generatedAt = nowIso();
+  // A weekday-clock preference is per provider and describes how the account
+  // is really used, so it is read once for the whole report and reaches the
+  // pace, runway, and selection this report publishes.
+  const weekdaysOnly = readWeekdaysOnlyProviders();
   const results = fetched.map((provider) =>
-    withQuotaSemantics(provider, generatedAt),
+    withQuotaSemantics(
+      provider,
+      generatedAt,
+      weekdaysOnly.has(provider.provider) ? { clock: "weekdays" } : {},
+    ),
   );
   if (writesCache) {
     writeCachedProvidersBestEffort(

@@ -86,9 +86,23 @@ export type QuotaPace = {
   status: QuotaPaceStatus;
   /** Present only when status is unknown. */
   reason?: QuotaPaceReason;
-  /** 100 * (resetsAt - generatedAt) / cycleDuration. */
+  /**
+   * Present as `weekdays` when the provider is configured for a weekday clock
+   * and the cycle contains weekday time: elapsed and remaining percentages
+   * then count only Monday through Friday in the host's local time, and
+   * `projectedExhaustedAt` is mapped back onto the wall clock. Absent means the
+   * ordinary calendar clock.
+   */
+  clock?: "weekdays";
+  /**
+   * 100 * (time to reset) / cycle duration, measured on the selected clock and
+   * so equal to the calendar share unless `clock` is `weekdays`.
+   */
   timeRemainingPercent?: number;
-  /** 100 * (generatedAt - cycleStart) / cycleDuration. */
+  /**
+   * 100 * (elapsed cycle time) / cycle duration, measured on the selected
+   * clock and so equal to the calendar share unless `clock` is `weekdays`.
+   */
   elapsedPercent?: number;
   /**
    * percentRemaining - timeRemainingPercent.

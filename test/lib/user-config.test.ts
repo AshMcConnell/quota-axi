@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   readTuiAccountLabels,
   readTuiShowPreference,
+  readWeekdaysOnlyProviders,
   userConfigFilePath,
 } from "../../src/lib/user-config.js";
 
@@ -200,6 +201,43 @@ describe("readTuiAccountLabels", () => {
         }),
         contents,
       ).toBe(undefined);
+    }
+  });
+});
+
+describe("readWeekdaysOnlyProviders", () => {
+  it("selects the provider ids pace.weekdaysOnly names", () => {
+    expect([
+      ...readWeekdaysOnlyProviders(
+        configFile('{"pace":{"weekdaysOnly":["claude","zai"]}}'),
+      ),
+    ]).toEqual(["claude", "zai"]);
+  });
+
+  it("ignores unknown, blank, and non-string entries", () => {
+    expect([
+      ...readWeekdaysOnlyProviders(
+        configFile(
+          '{"pace":{"weekdaysOnly":[" claude ", "friend", "", 3, null]}}',
+        ),
+      ),
+    ]).toEqual(["claude"]);
+  });
+
+  it("selects nothing without a usable setting", () => {
+    for (const contents of [
+      undefined,
+      "not json",
+      "[]",
+      "{}",
+      '{"pace":{}}',
+      '{"pace":{"weekdaysOnly":"claude"}}',
+      '{"pace":{"weekdaysOnly":true}}',
+      '{"weekdaysOnly":["claude"]}',
+    ]) {
+      expect(readWeekdaysOnlyProviders(configFile(contents)), contents).toEqual(
+        new Set(),
+      );
     }
   });
 });
